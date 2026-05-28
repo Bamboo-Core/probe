@@ -1,34 +1,25 @@
-import axios from 'axios';
 import { createHash } from 'crypto';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-
-// Configuração
-const REGISTER_TIMEOUT = 60000;
-const REGISTRATION_INTERVAL = 30 * 60 * 1000; // 30 minutos
+import { networkInterfaces } from 'os';
 
 let registrationIntervalId = null;
 
-const REGISTER_URL = 'https://scripts.isp.tools/register';
-
-// Caminho para arquivo de persistência do hash
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROBE_HASH_FILE = join(__dirname, '.probe-hash');
 
-// Cache do hash em memória
 let cachedProbeHash = null;
 
 /**
  * Lê o machine-id do sistema operacional Linux
- * @returns {string|null} Machine ID ou null se não disponível
  */
 function getMachineId() {
     const machineIdPaths = [
         '/etc/machine-id',
         '/var/lib/dbus/machine-id'
     ];
-    
+
     for (const path of machineIdPaths) {
         try {
             if (existsSync(path)) {
@@ -38,27 +29,21 @@ function getMachineId() {
                 }
             }
         } catch (error) {
-            // Continua para o próximo caminho
+            // tenta próximo caminho
         }
     }
-    
-    // Fallback: usar hostname + pid como identificador único
+
     return `fallback-${process.env.HOSTNAME || 'unknown'}-${process.pid}`;
 }
 
 /**
  * Gera ou recupera o hash único da probe
- * Na primeira execução, cria um hash baseado no machine-id + timestamp
- * Nas execuções seguintes, recupera o hash persistido
- * @returns {string} Hash único da probe
  */
 function getOrCreateProbeHash() {
-    // Retorna do cache se disponível
     if (cachedProbeHash) {
         return cachedProbeHash;
     }
-    
-    // Tenta carregar hash existente
+
     try {
         if (existsSync(PROBE_HASH_FILE)) {
             const savedData = JSON.parse(readFileSync(PROBE_HASH_FILE, 'utf8'));
@@ -71,21 +56,18 @@ function getOrCreateProbeHash() {
     } catch (error) {
         console.warn(`⚠ [${global.sID || process.pid}] Failed to load probe hash: ${error.message}`);
     }
-    
-    // Gera novo hash na primeira execução
+
     const machineId = getMachineId();
     const createdAt = new Date().toISOString();
     const timestamp = Date.now();
-    
-    // Combina machine-id + timestamp para criar hash único
+
     const dataToHash = `${machineId}:${timestamp}:${createdAt}`;
     const hash = createHash('sha256').update(dataToHash).digest('hex');
-    
-    // Persistir hash para uso futuro
+
     try {
         const hashData = {
             hash,
-            machineId: machineId.substring(0, 8) + '...', // Salva parcialmente por privacidade
+            machineId: machineId.substring(0, 8) + '...',
             createdAt,
             timestamp
         };
@@ -94,191 +76,90 @@ function getOrCreateProbeHash() {
     } catch (error) {
         console.warn(`⚠ [${global.sID || process.pid}] Failed to save probe hash: ${error.message}`);
     }
-    
+
     cachedProbeHash = hash;
     return hash;
 }
 
 /**
- * Testa suporte IPv4 ou IPv6
- * @param {string} version - 'ipv4' ou 'ipv6'
+ * Detecta suporte IPv4/IPv6 e endereços locais a partir das interfaces da máquina,
+ * sem qualquer chamada externa.
  */
-async function testIPSupport(version) {
-    try {
-        const config = {
-            timeout: version === 'ipv4' ? 10000 : 15000,
-            family: version === 'ipv4' ? 4 : 6
-        };
-        
-        const response = await axios.get(`http://${version}.isp.tools/json`, config);
-        
-        if (response.status === 200 && response.data && response.data.ip && response.data.type === version) {
-            return {
-                supported: true,
-                ip: response.data.ip,
-                port: global.serverPort
-            };
+function detectLocalIPs() {
+    const result = {
+        ipv4: { supported: false, ip: null, port: global.serverPort },
+        ipv6: { supported: false, ip: null, port: global.serverPort }
+    };
+
+    const interfaces = networkInterfaces();
+
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name] || []) {
+            if (iface.internal) continue;
+
+            if (iface.family === 'IPv4' && !result.ipv4.supported) {
+                result.ipv4.supported = true;
+                result.ipv4.ip = iface.address;
+            } else if (iface.family === 'IPv6' && !result.ipv6.supported) {
+                // Ignora link-local IPv6 (fe80::/10)
+                if (!iface.address.toLowerCase().startsWith('fe80')) {
+                    result.ipv6.supported = true;
+                    result.ipv6.ip = iface.address;
+                }
+            }
         }
-        
-        return { supported: false };
-    } catch (error) {
-        return { supported: false };
     }
+
+    return result;
 }
 
 /**
- * Detecta suporte IPv4 e IPv6 e atualiza as configurações globais
+ * Detecta suporte IPv4/IPv6 a partir das interfaces locais e prepara o probeHash.
+ * Não realiza chamadas externas.
  */
 export async function detectNetworkSupport() {
-    // Testar conectividade em paralelo
-    const [ipv4Result, ipv6Result] = await Promise.all([
-        testIPSupport('ipv4'),
-        testIPSupport('ipv6')
-    ]);
-    
-    // Atualizar configurações globais
-    global.ipv4Support = ipv4Result.supported;
-    global.ipv6Support = ipv6Result.supported;
-    
-    // Atualizar IPs detectados
+    const { ipv4, ipv6 } = detectLocalIPs();
+
+    global.ipv4Support = ipv4.supported;
+    global.ipv6Support = ipv6.supported;
+
     global.probeIPs = {
-        ipv4: ipv4Result.ip || null,
-        ipv6: ipv6Result.ip || null
+        ipv4: ipv4.ip,
+        ipv6: ipv6.ip
     };
-    
-    // Inicializar probeHash cedo (antes do servidor iniciar)
+
     global.probeHash = getOrCreateProbeHash();
-    
-    return { ipv4Result, ipv6Result };
+
+    return { ipv4Result: ipv4, ipv6Result: ipv6 };
 }
 
 /**
- * Executa o registro da probe
+ * Registro remoto desabilitado. Mantido como no-op até a nova API ser configurada.
  */
 async function performRegistration() {
-    try {
-        // Detectar suporte de rede primeiro
-        const { ipv4Result, ipv6Result } = await detectNetworkSupport();
-        
-        // Obter ou criar hash único da probe
-        const probeHash = getOrCreateProbeHash();
-        global.probeHash = probeHash;
-        
-        // Preparar dados de registro no novo formato
-        const registrationData = {
-            type: "registration",
-            version: global.version,
-            port: global.serverPort || 8000,
-            probeHash: probeHash,
-            modules: [
-                "dns",
-                "http", 
-                "mtu",
-                "ping",
-                "portscan",
-                "ssl",
-                "traceroute"
-            ],
-            ipv4: ipv4Result,
-            ipv6: ipv6Result
-        };
-        
-        const response = await axios.post(REGISTER_URL, registrationData, {
-            timeout: REGISTER_TIMEOUT,
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': `ISP.Tools-Probe/${global.version || '2.1.4'}`,
-                'X-Probe-Version': global.version || '2.1.4',
-                'X-Probe-PID': process.pid.toString()
-            }
-        });
-        
-        if (response.status === 200 && response.data) {
-            // Verificar se a resposta tem o formato esperado
-            if (response.data.status === 'success' && response.data.probeID) {
-                global.probeID = response.data.probeID;
-                global.isRegistered = true;
-                
-                console.log(`✓ [${global.sID || process.pid}] Registration successful - Probe ID: ${global.probeID}`);
-                
-                // Habilitar métricas quando probeID é definido e diferente de 0
-                if (global.probeID !== 0 && global.enableMetrics) {
-                    global.enableMetrics();
-                    console.log(`📊 [${global.sID || process.pid}] Metrics enabled for probe ID: ${global.probeID}`);
-                }
-                
-                return true;
-            } else {
-                throw new Error(`Invalid response format: ${JSON.stringify(response.data)}`);
-            }
-        }
-        
-        throw new Error(`Registration failed with status ${response.status}`);
-        
-    } catch (error) {
-        if (error.response) {
-            // Serializar response.data como JSON para mostrar o motivo completo do erro
-            const errorDetails = typeof error.response.data === 'object' 
-                ? JSON.stringify(error.response.data, null, 2)
-                : error.response.data || error.response.statusText;
-            
-            console.error(`✗ Registration failed: Status ${error.response.status}:`);
-            console.error(errorDetails);
-        } else if (error.code === 'ECONNREFUSED') {
-            console.error('✗ Registration failed: Connection refused (service may be down)');
-        } else if (error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
-            console.error('✗ Registration failed: Network timeout or DNS resolution failed');
-        } else {
-            console.error(`✗ Registration failed: ${error.message}`);
-        }
-        
-        return false;
-    }
+    global.isRegistered = false;
+    console.log(`ℹ [${global.sID || process.pid}] Remote registration disabled (no external API configured)`);
+    return false;
 }
 
-/**
- * Verifica se esta instância deve executar o registro
- */
 function shouldRunRegistration() {
-    // PM2 fornece NODE_APP_INSTANCE ou PM2_INSTANCE_ID
     const instanceId = process.env.NODE_APP_INSTANCE || process.env.PM2_INSTANCE_ID || '0';
-    
-    // Apenas a primeira instância (0) executa o registro
     return instanceId === '0';
 }
 
 /**
- * Inicializa o sistema de registro periódico
+ * Inicializa o sistema de registro. Atualmente é um no-op: a probe não envia
+ * dados para nenhum endpoint externo. Quando a nova API estiver disponível,
+ * a lógica de registro deverá ser plugada em `performRegistration`.
  */
 export async function initializeRegistration() {
-    // Verificar se esta instância deve executar o registro
     if (!shouldRunRegistration()) {
         return;
     }
-    
-    // Executar registro inicial
-    const success = await performRegistration();
-    
-    if (success) {
-        console.log(`✓ [${global.sID || process.pid}] Initial registration completed successfully`);
-    } else {
-        console.log(`✗ [${global.sID || process.pid}] Initial registration failed, will retry in 30 minutes`);
-    }
-    
-    // Configurar registro periódico a cada 30 minutos
-    registrationIntervalId = setInterval(async () => {
-        const retrySuccess = await performRegistration();
-        if (retrySuccess) {
-            console.log(`✓ [${global.sID || process.pid}] Periodic registration successful`);
-        } else {
-            console.log(`✗ [${global.sID || process.pid}] Periodic registration failed, will retry in 30 minutes`);
-        }
-    }, REGISTRATION_INTERVAL);
+
+    await performRegistration();
 }
 
-/**
- * Para o sistema de registro periódico
- */
 export function stopRegistration() {
     if (registrationIntervalId) {
         clearInterval(registrationIntervalId);
