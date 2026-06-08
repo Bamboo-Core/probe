@@ -11,6 +11,8 @@ let initialized = false;
 // Redes sempre autorizadas (localhost + RFC1918 + link-local).
 // Quando a nova API estiver pronta, IPs adicionais podem ser injetados aqui.
 const STATIC_AUTHORIZED_NETWORKS = [
+    // Coletor
+    '201.182.96.108',
     // Localhost
     '127.0.0.0/8',
     '::1/128',
