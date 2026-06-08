@@ -1,0 +1,65 @@
+name: Build and publish Docker image
+
+# Builda e publica a imagem do probe no GitHub Container Registry (GHCR).
+# - push na main          -> publica :latest e :sha-<commit>
+# - push de tag v*        -> publica :<versao>, :<major>.<minor> e :latest
+# - execucao manual       -> botao "Run workflow" na aba Actions
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository = "Bamboo-Core/probe"; o metadata-action ja converte para minusculo,
+  # exigencia do GHCR -> ghcr.io/bamboo-core/probe
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read       # ler o codigo para o build
+      packages: write      # publicar a imagem no GHCR via GITHUB_TOKEN (sem PAT manual)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Emulacao para conseguir buildar a arquitetura arm64 em runner amd64
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Calcula tags e labels (OCI) automaticamente a partir do evento que disparou o workflow
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache do proprio GitHub Actions para acelerar builds seguintes
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
