@@ -13,12 +13,12 @@ RUN apk add --no-cache \
 
 ENV PYTHON=/usr/bin/python3
 
-# Clonar repositório e instalar dependências
-RUN git clone https://github.com/isptools/probe.git . && \
-    npm ci --omit=dev --no-audit --no-fund && \
-    # Remover cache do npm e arquivos temporários
+# Copiar código local e instalar dependências
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
     rm -rf /root/.npm /tmp/*
+COPY . .
 
 # Production stage - imagem final mínima
 FROM node:20-alpine AS production
