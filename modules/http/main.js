@@ -1,10 +1,11 @@
-import { promises as dns } from 'dns';
+﻿﻿﻿﻿import { promises as dns } from 'dns';
 import net from 'net';
 import url from 'url';
 import http from 'http';
 import https from 'https';
 import { optionalAuthMiddleware } from '../../auth.js';
 import { recordHttpSuccess, recordHttpFailure, recordSslHandshake, recordSslCertificate, recordApiRequest } from '../../metrics.js';
+import { parseFamily } from '../../family.js';
 
 // Configuração específica do módulo HTTP
 const HTTP_TIMEOUT = 5000; // 5 segundos para requisições HTTP/HTTPS
@@ -110,12 +111,38 @@ function parseCertificate(cert, socket, hostname) {
 	};
 }
 
+// Resolve o hostname respeitando a família pedida. family: 4|6|null.
+// null => IPv4-first com fallback IPv6 (comportamento original). Lança em falha de resolução
+// (o chamador transforma em erro DNS com ipVersion 0). Para IP literal que contradiz a
+// família pedida (ex.: 1.1.1.1 com family=6), também lança.
+async function resolveForFamily(hostname, family) {
+	if (net.isIP(hostname)) {
+		const v = net.isIPv6(hostname) ? 6 : 4;
+		if (family && family !== v) throw new Error('host not found');
+		return { resolvedIPs: null, ipVersion: v };
+	}
+	if (family === 6 && global.ipv6Support === false) {
+		throw new Error('IPv6 not supported on this probe');
+	}
+	if (family !== 6) {
+		try {
+			const ipv4s = await dns.resolve4(hostname);
+			return { resolvedIPs: ipv4s, ipVersion: 4 };
+		} catch (ipv4Error) {
+			if (family === 4) throw ipv4Error; // não cai para v6 quando v4 é obrigatório
+		}
+	}
+	const ipv6s = await dns.resolve6(hostname);
+	return { resolvedIPs: ipv6s, ipVersion: 6 };
+}
+
 export const httpModule = {
 	route: '/http/:id',
 	method: 'get',
 	middleware: [optionalAuthMiddleware],
 	handler: async (request, reply) => {
 		const startTime = Date.now();
+		const family = parseFamily(request.query);
 		try {
 			let attrIP = decodeURIComponent(request.params.id.toString());
 			// Detecta se é URL base64 ou Encoded
@@ -162,17 +189,9 @@ export const httpModule = {
 
 			if (hostname && !net.isIP(hostname)) {
 				try {
-					// Tentar resolver IPv4 primeiro
-					try {
-						const ipv4s = await dns.resolve4(hostname);
-						resolvedIPs = ipv4s;
-						ipVersion = 4;
-					} catch (ipv4Error) {
-						// Se IPv4 falhar, tentar IPv6 sempre
-						const ipv6s = await dns.resolve6(hostname);
-						resolvedIPs = ipv6s;
-						ipVersion = 6;
-					}
+					const r = await resolveForFamily(hostname, family);
+					resolvedIPs = r.resolvedIPs;
+					ipVersion = r.ipVersion;
 				} catch (dnsError) {
 					return {
 						"timestamp": new Date().toISOString(),
@@ -215,15 +234,9 @@ export const httpModule = {
 					if (currentParsedUrl.hostname && !net.isIP(currentParsedUrl.hostname)) {
 						const dnsStart = Date.now();
 						try {
-							try {
-								const ipv4s = await dns.resolve4(currentParsedUrl.hostname);
-								currentResolvedIPs = ipv4s;
-								currentIpVersion = 4;
-							} catch (ipv4Error) {
-								const ipv6s = await dns.resolve6(currentParsedUrl.hostname);
-								currentResolvedIPs = ipv6s;
-								currentIpVersion = 6;
-							}
+							const r = await resolveForFamily(currentParsedUrl.hostname, family);
+							currentResolvedIPs = r.resolvedIPs;
+							currentIpVersion = r.ipVersion;
 							dnsMs = Date.now() - dnsStart;
 						} catch (dnsError) {
 							reject({
@@ -241,7 +254,7 @@ export const httpModule = {
 
 					const options = {
 						timeout: HTTP_TIMEOUT,
-						family: currentIpVersion === 6 ? 6 : (currentIpVersion === 4 ? 4 : 0),
+						family: family || (currentIpVersion === 6 ? 6 : (currentIpVersion === 4 ? 4 : 0)),
 						headers: {
 							'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 						},
