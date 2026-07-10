@@ -3,6 +3,7 @@ import net from 'net';
 import raw from 'raw-socket';
 import { optionalAuthMiddleware } from '../../auth.js';
 import { recordTraceroute, recordApiRequest } from '../../metrics.js';
+import { parseFamily } from '../../family.js';
 
 // Constantes de comportamento (manter mesmas semantics/valores)
 const RAW_TIMEOUT_PER_HOP = 700; // ms
@@ -136,18 +137,27 @@ async function rawTraceroute(targetIP, maxHops) {
 // --------------------------------------------------
 // Resolução de target (hostname/IP) mantendo mesma lógica de fallback
 // --------------------------------------------------
-async function resolveTarget(attrIP) {
+// family: 4 | 6 | null. null => IPv4-first com fallback IPv6 (comportamento original).
+async function resolveTarget(attrIP, family = null) {
 	if (net.isIP(attrIP)) {
-		return { targetIP: attrIP, resolvedIPs: null, ipVersion: net.isIPv6(attrIP) ? 6 : 4 };
+		const v = net.isIPv6(attrIP) ? 6 : 4;
+		if (family && family !== v) return { err: 'host not found' };
+		return { targetIP: attrIP, resolvedIPs: null, ipVersion: v };
+	}
+	if (family === 6 && global.ipv6Support === false) {
+		return { err: 'IPv6 not supported on this probe' };
 	}
 	try {
-		try { // tentar IPv4 primeiro
-			const ipv4s = await dns.resolve4(attrIP);
-			return { targetIP: ipv4s[0], resolvedIPs: ipv4s, ipVersion: 4 };
-		} catch (v4err) {
-			const ipv6s = await dns.resolve6(attrIP); // fallback IPv6
-			return { targetIP: ipv6s[0], resolvedIPs: ipv6s, ipVersion: 6 };
+		if (family !== 6) {
+			try {
+				const ipv4s = await dns.resolve4(attrIP);
+				return { targetIP: ipv4s[0], resolvedIPs: ipv4s, ipVersion: 4 };
+			} catch (v4err) {
+				if (family === 4) throw v4err; // não cai para v6 quando v4 é obrigatório
+			}
 		}
+		const ipv6s = await dns.resolve6(attrIP);
+		return { targetIP: ipv6s[0], resolvedIPs: ipv6s, ipVersion: 6 };
 	} catch (e) {
 		return { err: 'host not found' };
 	}
@@ -164,6 +174,7 @@ export const tracerouteModule = {
 		const startTime = Date.now();
 		try {
 			const attrIP = request.params.id.toString();
+			const family = parseFamily(request.query);
 			const maxHops = request.params.maxhops ? parseInt(trim(request.params.maxhops)) : 30;
 			const sessionID = request.query.sessionID;
 			debugLog('Params', { attrIP, maxHops, sessionID });
@@ -177,7 +188,7 @@ export const tracerouteModule = {
 			global.sID = (global.sID >= 65535) ? 0 : (global.sID + 1 || 0);
 			const sID = global.sID;
 
-			const { targetIP, resolvedIPs, ipVersion, err } = await resolveTarget(attrIP);
+			const { targetIP, resolvedIPs, ipVersion, err } = await resolveTarget(attrIP, family);
 			if (err) {
 				recordApiRequest('traceroute', '/traceroute', Date.now() - startTime, 'failure');
 				return { timestamp: new Date().toISOString(), target: attrIP, err, sessionID, ipVersion: 0, responseTimeMs: Date.now() - startTime };
