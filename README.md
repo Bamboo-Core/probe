@@ -225,6 +225,19 @@ curl http://localhost:8000/HTTP/aHR0cDovL2dvb2dsZS5jb20=
 }
 ```
 
+### Seleção de família de endereço (IPv4/IPv6)
+
+Todos os módulos baseados em resolução (`ping`, `http`, `traceroute`, `mtu`, `portscan`,
+`smokeping`) aceitam o query param opcional **`family`**:
+
+- `?family=4` — resolve e sonda **apenas** via IPv4 (só registros `A`).
+- `?family=6` — resolve e sonda **apenas** via IPv6 (só registros `AAAA`).
+- ausente — comportamento padrão: IPv4-first com fallback para IPv6.
+
+Quando a família pedida não tem registro (ex.: `1.1.1.1?family=6`), a resposta vem com
+`ipVersion: 0` e `err` (`HostNotFoundError`; ou `IPv6NotSupportedError` quando a VM não tem
+egress IPv6). O módulo `dns` não usa `family` — ele já separa por `?method=A|AAAA`.
+
 ## 🔧 Configuração
 
 ### Variáveis de Ambiente
