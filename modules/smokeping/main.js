@@ -4,6 +4,7 @@ import pingus from 'pingus';
 import raw from 'raw-socket';
 import { optionalAuthMiddleware } from '../../auth.js';
 import { recordApiRequest } from '../../metrics.js';
+import { parseFamily } from '../../family.js';
 
 // Constantes
 const PING_TIMEOUT = 1000;      		// ms (padrão; pode ser sobrescrito por query ?timeout=ms)
@@ -39,16 +40,28 @@ function getCached(host) {
 	return e;
 }
 
-async function resolveHost(host) {
-	if (net.isIP(host)) return { ips: [host], version: net.isIPv6(host) ? 6 : 4 };
-	const c = getCached(host); if (c) return c;
-	try {
-		const v4 = await dns.resolve4(host);
-		if (v4?.length) { const e = { ips: v4, version: 4, expires: Date.now() + DNS_CACHE_TTL }; dnsCache.set(host, e); return e; }
-	} catch (_) {}
+// family: 4 | 6 | null. null => IPv4-first com fallback IPv6 (comportamento original).
+// Com família explícita, resolve SÓ aquela família e NÃO usa o cache (evita misturar v4/v6).
+async function resolveHost(host, family = null) {
+	if (net.isIP(host)) {
+		const v = net.isIPv6(host) ? 6 : 4;
+		if (family && family !== v) return { ips: [], version: 0, error: 'host not found' };
+		return { ips: [host], version: v };
+	}
+	if (!family) { const c = getCached(host); if (c) return c; }
+	if (family === 6 && global.ipv6Support === false) {
+		return { ips: [], version: 0, error: 'ipv6-only (disabled)' };
+	}
+	if (family !== 6) {
+		try {
+			const v4 = await dns.resolve4(host);
+			if (v4?.length) { const e = { ips: v4, version: 4, expires: Date.now() + DNS_CACHE_TTL }; if (!family) dnsCache.set(host, e); return e; }
+		} catch (_) {}
+		if (family === 4) return { ips: [], version: 0, error: 'host not found' };
+	}
 	try {
 		const v6 = await dns.resolve6(host);
-		if (v6?.length) { const e = { ips: v6, version: 6, expires: Date.now() + DNS_CACHE_TTL }; dnsCache.set(host, e); return e; }
+		if (v6?.length) { const e = { ips: v6, version: 6, expires: Date.now() + DNS_CACHE_TTL }; if (!family) dnsCache.set(host, e); return e; }
 	} catch (_) {}
 	return { ips: [], version: 0, error: 'host not found' };
 }
@@ -607,6 +620,7 @@ export const smokeping = {
 	// Pegar parâmetros da query string ao invés da rota
 		let ttl = ttlNormalize(parseInt(String(request.query.ttl || '')) || 128);
 		const input = String(request.params.id || '');
+		const family = parseFamily(request.query);
 		
 		// Validar e normalizar count
 		let count = parseInt(String(request.query.count || '')) || DEFAULT_PING_COUNT;
@@ -623,7 +637,7 @@ export const smokeping = {
 		
 		try {
 			const dnsStartTime = Date.now();
-			const res = await resolveHost(input);
+			const res = await resolveHost(input, family);
 			const dnsEndTime = Date.now();
 			dbg('dns:resolution', { input, durationMs: dnsEndTime - dnsStartTime, version: res.version, ips: res.ips, error: res.error });
 			
