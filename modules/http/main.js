@@ -1,4 +1,4 @@
-﻿﻿﻿﻿import { promises as dns } from 'dns';
+import { promises as dns } from 'dns';
 import net from 'net';
 import url from 'url';
 import http from 'http';
