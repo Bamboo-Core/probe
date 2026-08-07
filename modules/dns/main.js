@@ -462,7 +462,29 @@ export const dnsModule = {
             const hostname = request.params.id.toString();
             const method = request.params.method.toString().toUpperCase();
             const enableDNSSEC = request.query.dnssec === 'true' || request.query.dnssec === '1';
-            
+
+            // ?resolver=<IP>: testa um servidor DNS específico (módulo dns_server
+            // do collector). Inválido => erro explícito, nunca silêncio (senão a
+            // medição "do DNS da operadora" cairia no resolver do sistema).
+            const resolverParam = typeof request.query.resolver === 'string' && request.query.resolver.length > 0
+                ? request.query.resolver : null;
+            const resolverIp = resolverParam && net.isIP(resolverParam) ? resolverParam : null;
+            if (resolverParam && !resolverIp) {
+                recordDnsQueryFailure(hostname, method, 'INVALID_RESOLVER', 'system');
+                recordApiRequest('dns', '/dns', Date.now() - startTime, 'failure');
+                return {
+                    "timestamp": new Date().toISOString(),
+                    "method": method,
+                    "host": hostname,
+                    "result": null,
+                    "err": { code: 'INVALID_RESOLVER', message: `resolver deve ser um IP literal: ${resolverParam}` },
+                    "ipVersion": 0,
+                    "responseTimeMs": Date.now() - startTime,
+                    "dnssec": null,
+                    "cached": false
+                };
+            }
+
             // Validate DNS record type
             const validTypes = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'PTR', 'SOA', 'SRV', 'CAA', 'DS', 'DNSKEY', 'RRSIG', 'NSEC', 'NSEC3', 'TLSA'];
             if (!validTypes.includes(method)) {
@@ -508,7 +530,7 @@ export const dnsModule = {
             }
 
             // Cache key
-            const cacheKey = `${method}:${hostname}:${enableDNSSEC}`;
+            const cacheKey = `${method}:${hostname}:${enableDNSSEC}:${resolverIp || 'system'}`;
             const cached = dnsCache.get(cacheKey);
             if (cached && Date.now() - cached.timestamp < 60000) {
                 return {
@@ -551,8 +573,15 @@ export const dnsModule = {
 
             // If we don't have results yet, use standard DNS queries
             if (!result) {
-                const dnsPromises = dns.promises || dns;
-                
+                let dnsPromises = dns.promises || dns;
+                if (resolverIp) {
+                    // Resolver dedicado apontado ao servidor pedido; timeout curto
+                    // para a resposta caber no ciclo do collector.
+                    const customResolver = new dns.promises.Resolver({ timeout: 2000, tries: 1 });
+                    customResolver.setServers([resolverIp]);
+                    dnsPromises = customResolver;
+                }
+
                 switch (method) {
                     case 'A':
                         result = await dnsPromises.resolve4(hostname);
