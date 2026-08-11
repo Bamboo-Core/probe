@@ -5,6 +5,7 @@ import { optionalAuthMiddleware } from '../../auth.js';
 import { getUdpPacket, getProtocolInfo } from './udp-protocols.js';
 import { getTcpProtocolInfo } from './tcp-protocols.js';
 import { recordPortscan, recordApiRequest } from '../../metrics.js';
+import { parseFamily } from '../../family.js';
 
 // Configuração específica do módulo PORTSCAN
 const PORTSCAN_TIMEOUT = 2000; // 2 segundos para scan de portas
@@ -110,6 +111,7 @@ function checkUdpPort(host, port, timeout = 1000) {
 // Handler compartilhado para GET e POST
 async function portscanHandler(request, reply) {
 		const startTime = Date.now();
+		const family = parseFamily(request.query) ?? parseFamily(request.body || {});
 		try {
 			// Extrair parâmetros do GET (URL) ou POST (body)
 			let attrIP, protocol, method, portsParam;
@@ -171,14 +173,33 @@ async function portscanHandler(request, reply) {
 			let ipVersion = 0;
 
 			if (!net.isIP(attrIP)) {
+				if (family === 6 && global.ipv6Support === false) {
+					recordApiRequest('portscan', '/portscan', Date.now() - startTime, 'failure');
+					return {
+						"timestamp": new Date().toISOString(),
+						"protocol": protocol,
+						"method": method,
+						"host": attrIP,
+						"err": 'IPv6 not supported on this probe',
+						"ipVersion": 0,
+						"responseTimeMs": Date.now() - startTime
+					};
+				}
 				try {
-					// Tentar resolver IPv4 primeiro
-					try {
-						const ipv4s = await dns.resolve4(attrIP);
-						resolvedIPs = ipv4s;
-						targetHost = ipv4s[0];
-						ipVersion = 4;
-					} catch (ipv4Error) {
+					// family: 4|6 => resolve só aquela família; null => v4-first com fallback v6.
+					let resolved = false;
+					if (family !== 6) {
+						try {
+							const ipv4s = await dns.resolve4(attrIP);
+							resolvedIPs = ipv4s;
+							targetHost = ipv4s[0];
+							ipVersion = 4;
+							resolved = true;
+						} catch (ipv4Error) {
+							if (family === 4) throw ipv4Error;
+						}
+					}
+					if (!resolved) {
 						const ipv6s = await dns.resolve6(attrIP);
 						resolvedIPs = ipv6s;
 						targetHost = ipv6s[0];
@@ -199,6 +220,18 @@ async function portscanHandler(request, reply) {
 			} else {
 				const is6 = net.isIPv6(attrIP);
 				ipVersion = is6 ? 6 : 4;
+				if (family && family !== ipVersion) {
+					recordApiRequest('portscan', '/portscan', Date.now() - startTime, 'failure');
+					return {
+						"timestamp": new Date().toISOString(),
+						"protocol": protocol,
+						"method": method,
+						"host": attrIP,
+						"err": 'host not found',
+						"ipVersion": 0,
+						"responseTimeMs": Date.now() - startTime
+					};
+				}
 			}
 
 			let portsToScan = [];
