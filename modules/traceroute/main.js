@@ -4,49 +4,14 @@ import raw from 'raw-socket';
 import { optionalAuthMiddleware } from '../../auth.js';
 import { recordTraceroute, recordApiRequest } from '../../metrics.js';
 import { parseFamily } from '../../family.js';
+import { buildIcmpEcho, parseIcmpPacket } from './icmp.js';
 
 // Constantes de comportamento (manter mesmas semantics/valores)
 const RAW_TIMEOUT_PER_HOP = 700; // ms
 const MAX_CONSECUTIVE_TIMEOUTS = 8;
-const DEFAULT_PAYLOAD_SIZE = 32;
 
 const debugLog = (...a) => console.log('[TRACEROUTE RAW]', ...a);
 const trim = (s) => (typeof s === 'string' ? s.trim() : '');
-
-// --------------------------------------------------
-// Utilidades ICMP
-// --------------------------------------------------
-function checksum(buf) {
-	let sum = 0;
-	for (let i = 0; i < buf.length; i += 2) {
-		sum += buf.readUInt16BE(i);
-		while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
-	}
-	return (~sum) & 0xffff;
-}
-
-function buildIcmpEcho(isIPv6, identifier, seq) {
-	const type = isIPv6 ? 128 : 8; // Echo Request types
-	const buf = Buffer.alloc(8 + DEFAULT_PAYLOAD_SIZE, 0x61);
-	buf.writeUInt8(type, 0);
-	buf.writeUInt8(0, 1); // code
-	buf.writeUInt16BE(0, 2); // checksum placeholder
-	buf.writeUInt16BE(identifier & 0xffff, 4);
-	buf.writeUInt16BE(seq & 0xffff, 6);
-	buf.writeUInt16BE(checksum(buf), 2);
-	return buf;
-}
-
-function parseIcmpPacket(isIPv6, packet) {
-	if (isIPv6) { // Assumindo payload direto ICMPv6
-		if (packet.length < 8) return null;
-		return { type: packet[0], code: packet[1] };
-	}
-	if (packet.length < 28) return null; // IPv4 header + ICMP
-	const ihl = (packet[0] & 0x0f) * 4;
-	if (packet.length < ihl + 8) return null;
-	return { type: packet[ihl], code: packet[ihl + 1] };
-}
 
 // --------------------------------------------------
 // Execução do traceroute via raw-socket
@@ -82,6 +47,11 @@ async function rawTraceroute(targetIP, maxHops) {
 					const isReply = (isIPv6 && parsed.type === 129) || (!isIPv6 && parsed.type === 0);
 					const isTime = (isIPv6 && parsed.type === 3) || (!isIPv6 && parsed.type === 11);
 					if (!isReply && !isTime) return; // ignorar outros tipos
+					// BUG CRÍTICO CORRIGIDO AQUI: sem checar identifier/sequence, este
+					// socket aceitava a resposta ICMP de QUALQUER traceroute/ping
+					// concorrente no mesmo host (raw socket recebe todo ICMP do
+					// sistema) — o alvo A podia terminar mostrando os hops do alvo B.
+					if (parsed.identifier !== identifier || parsed.sequence !== ttl) return;
 					hopInfo = { hop: ttl, ip: src, hostname: src, responseTime: rtt, status: isReply ? 'reached' : 'intermediate' };
 					if (isReply) reachedDestination = true;
 					resolve();
