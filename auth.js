@@ -1,9 +1,33 @@
-// Middleware de autenticação baseado em IP para endpoints da probe
+// Middleware de autenticação dos endpoints da probe.
 //
-// Verifica se a requisição provém de IPs autorizados (localhost e redes privadas/bogons).
+// Camada primária: segredo compartilhado (header X-Probe-Key), mesmo padrão
+// já usado pelo probe-collector para se proteger (X-Collector-Key). Camada de
+// fallback: allowlist de IP (localhost e redes privadas/bogons) — só entra em
+// jogo quando PROBE_SHARED_SECRET não está configurado (rollout gradual: o
+// binário novo não quebra probes que ainda não receberam o segredo).
 //
+// ATENÇÃO — a allowlist de IP por si só NÃO é suficiente contra a internet: o
+// Fastify (main.js) precisa estar com trustProxy desligado (ou restrito a
+// proxies confiáveis), senão qualquer cliente pode forjar seu IP autorizado
+// via header X-Forwarded-For e o allowlist não protege nada.
 
 import net from 'net';
+import crypto from 'crypto';
+
+const SHARED_SECRET = process.env.PROBE_SHARED_SECRET || '';
+
+/** Compara em tempo constante; tamanhos diferentes nunca vazam por timing. */
+function timingSafeEqualStr(a, b) {
+    const bufA = Buffer.from(String(a));
+    const bufB = Buffer.from(String(b));
+    if (bufA.length !== bufB.length) {
+        // Compara contra si mesmo só para gastar tempo equivalente — evita que
+        // a diferença de tamanho seja um oráculo de timing.
+        crypto.timingSafeEqual(bufA, bufA);
+        return false;
+    }
+    return crypto.timingSafeEqual(bufA, bufB);
+}
 
 let authorizedIPs = [];
 let initialized = false;
@@ -106,9 +130,23 @@ export async function initializeAuth() {
 }
 
 /**
- * Middleware de autenticação baseado em IP
+ * Middleware de autenticação. Com PROBE_SHARED_SECRET configurado, o segredo
+ * é a ÚNICA via de acesso (a allowlist de IP não entra em jogo — IP sozinho
+ * nunca deveria autorizar nada exposto à internet). Sem o segredo configurado
+ * (probe ainda não recebeu a variável, rollout em andamento), cai no
+ * comportamento anterior de allowlist de IP.
  */
 export async function ipAuthMiddleware(request, reply) {
+    if (SHARED_SECRET) {
+        const provided = request.headers['x-probe-key'] || '';
+        if (provided && timingSafeEqualStr(provided, SHARED_SECRET)) return;
+        reply.status(401).send({
+            error: 'Invalid or missing probe key',
+            message: 'Requisição precisa do header X-Probe-Key correto.'
+        });
+        return;
+    }
+
     if (!initialized) {
         await initializeAuth();
     }
@@ -157,7 +195,9 @@ export async function authMiddleware(request, reply) {
 }
 
 /**
- * Handler para status da autenticação
+ * Handler para status da autenticação. Endpoint PÚBLICO (sem middleware) —
+ * não expõe a allowlist de IP nem o segredo aqui: listar exatamente quais IPs
+ * passam é dar a receita de bypass pra quem só precisa forjar X-Forwarded-For.
  */
 export async function authStatusHandler(request, reply) {
     if (!initialized) {
@@ -165,10 +205,10 @@ export async function authStatusHandler(request, reply) {
     }
 
     const response = {
-        authType: 'IP-based',
-        authorizedNetworks: authorizedIPs.length,
-        networks: authorizedIPs,
-        message: 'Authentication is based on authorized IP networks'
+        authType: SHARED_SECRET ? 'shared-secret' : 'ip-allowlist (legado)',
+        message: SHARED_SECRET
+            ? 'Autenticação por segredo compartilhado (header X-Probe-Key).'
+            : 'Sem PROBE_SHARED_SECRET configurado — usando allowlist de IP (modo legado).'
     };
 
     if (!reply) {

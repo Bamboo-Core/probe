@@ -18,7 +18,12 @@ import { generatePrometheusOutput } from './metrics.js';
 // Configuração otimizada do Fastify
 const fastifyConfig = {
 	logger: false,
-	trustProxy: true,
+	// `false`: esta probe não fica atrás de um reverse proxy confiável — com
+	// trustProxy=true, request.ip refletia o header X-Forwarded-For, que
+	// QUALQUER cliente controla. Isso deixava a allowlist de IP em auth.js
+	// (que decide quem é autorizado justamente por request.ip) totalmente
+	// contornável por qualquer requisição da internet.
+	trustProxy: false,
 	bodyLimit: 512000,
 	keepAliveTimeout: 7200000,    // 2 horas
 	connectionTimeout: 300000,    // 5 minutos 
