@@ -34,7 +34,8 @@ RUN apk add --no-cache \
     dumb-init \
     wget \
     git \
-    dcron && \
+    dcron \
+    fping && \
     npm install -g pm2@latest && \
     npm cache clean --force
 

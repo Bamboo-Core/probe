@@ -305,6 +305,27 @@ O servidor fornece logs detalhados de todas as requisições:
 - **Input Validation**: Validação de parâmetros de entrada
 - **Timeout Protection**: Timeouts em todas as operações de rede
 
+## 🐳 Execução em Container (Docker)
+
+### Permissões Necessárias
+
+O container da probe requer a capability Linux **`NET_RAW`** para operações ICMP (ping, traceroute, fping):
+
+```yaml
+# docker-compose.yml
+services:
+  probe:
+    cap_add:
+      - NET_RAW
+```
+
+ou via linha de comando Docker:
+```bash
+docker run --cap-add=NET_RAW <imagem>
+```
+
+**Nota:** Esta capability é necessária para os módulos `ping`, `traceroute` (que usam raw sockets) e `fping` (batch ping).
+
 ## 📝 Logs
 
 Todos os acessos são logados com:
