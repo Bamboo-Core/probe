@@ -53,6 +53,9 @@ const globalHeaders = {
 	'Cache-Control': 'no-cache, private, no-store, must-revalidate'
 };
 
+// Parser text/plain para POST /ping-batch/:family (corpo = IPs/hosts separados por \n)
+fastify.addContentTypeParser('text/plain', { parseAs: 'string' }, (req, body, done) => done(null, body));
+
 // Hook ultra-otimizado
 fastify.addHook('onRequest', async (request, reply) => {
 	reply.headers(globalHeaders);

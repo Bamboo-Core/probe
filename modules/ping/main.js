@@ -4,6 +4,7 @@ import pingus from 'pingus';
 import { optionalAuthMiddleware } from '../../auth.js';
 import { recordPingSuccess, recordPingFailure, recordPingDnsResolution, recordApiRequest } from '../../metrics.js';
 import { parseFamily } from '../../family.js';
+import { buildBatchResponse } from './fping-run.js';
 
 // Constantes
 const PING_TIMEOUT = 1000;      // ms
@@ -189,6 +190,22 @@ function buildError(result) {
 	if (result.error === 'unreachable') return { name: 'DestinationUnreachableError', message: `Destination unreachable (source=${result.hopIP})`, source: result.hopIP };
 	return { name: 'RequestTimedOutError', message: result.error || 'timeout' };
 }
+
+export const pingBatch = {
+	route: '/ping-batch/:family',
+	method: 'post',
+	middleware: [optionalAuthMiddleware],
+	handler: async (request) => {
+		const family = request.params.family === '6' ? 6 : 4;
+		const count = Math.min(10, Math.max(1, parseInt(String(request.query?.c || '4')) || 4));
+		// body text/plain: literais \n-separados. Fastify entrega string ou Buffer.
+		const body = typeof request.body === 'string'
+			? request.body
+			: (request.body ? String(request.body) : '');
+		const targets = body.split('\n').map((s) => s.trim()).filter(Boolean);
+		return await buildBatchResponse({ targets, family, count });
+	},
+};
 
 export const ping = {
 	route: '/ping/:id/:ttl?',
