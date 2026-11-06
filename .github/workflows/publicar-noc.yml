@@ -1,0 +1,68 @@
+# Publica a imagem do probe no registry privado do NOC e registra a release no hub.
+# O workflow docker-publish.yml (ghcr) continua como está; este é só para a instalação automática.
+# Beta = dispatch de um ref fora da main.
+name: publicar-noc
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Por ref, sem cancelar: as releases são registradas na ordem dos pushes.
+concurrency:
+  group: publicar-noc-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: registry.kuantics.io
+  IMAGEM: noc-probe
+
+jobs:
+  imagem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ci
+          password: ${{ secrets.FLOW_REGISTRY_CI_SENHA }}
+      - name: Tag curta
+        run: echo "S7=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+      - name: Build e push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/noc/${{ env.IMAGEM }}:sha-${{ env.S7 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  registrar:
+    needs: imagem
+    runs-on: ubuntu-latest
+    steps:
+      - name: Registrar release no hub
+        env:
+          HUB: ${{ vars.KUANTICS_HUB_URL }}
+          TOKEN: ${{ secrets.FLOW_RELEASE_CI_TOKEN }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          CANAL=beta
+          if [ "$REF" = "refs/heads/main" ]; then CANAL=stable; fi
+          S7="${SHA:0:7}"
+          BODY=$(jq -n --arg canal "$CANAL" --arg sha "$SHA" --arg img "$REGISTRY/noc/$IMAGEM:sha-$S7" --arg nome "$IMAGEM" '{
+            origem: "probe", canal: $canal, commitSha: $sha,
+            imagens: {($nome): $img}
+          }')
+          curl -fsS -X POST "$HUB/api/noc-instalacao/interno/releases" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY"

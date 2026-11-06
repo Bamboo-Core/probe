@@ -140,3 +140,5 @@ Thumbs.db
 
 *.sh
 Dockerfile.isptools
+!cron-setup.sh
+!test/*.sh

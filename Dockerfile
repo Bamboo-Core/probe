@@ -53,8 +53,8 @@ RUN rm -rf \
     /root/.npm \
     /tmp/*
 
-# Configurar cron para git pull a cada 10 minutos
-RUN echo "*/10 * * * * cd /app && git pull" | crontab -
+# O crontab (git pull a cada 10 min) é instalado na partida por cron-setup.sh:
+# PROBE_GIT_PULL=0 desliga o git pull (imagens versionadas do NOC); sem a env, continua ligado.
 
 EXPOSE 8000
 
@@ -63,5 +63,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=10 \
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
-CMD ["sh", "-c", "crond && pm2-runtime start ecosystem.config.cjs --env production"]
+CMD ["sh", "-c", "sh /app/cron-setup.sh || true; crond && pm2-runtime start ecosystem.config.cjs --env production"]
 
