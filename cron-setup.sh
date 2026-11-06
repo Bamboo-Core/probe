@@ -6,8 +6,9 @@
 set -eu
 CRONTAB_BIN="${CRONTAB_BIN:-crontab}"
 
+# Nunca derruba a partida do probe: falha do crontab só avisa (antes ele rodava no build).
 if [ "${PROBE_GIT_PULL:-1}" = "0" ]; then
 	"$CRONTAB_BIN" -r 2>/dev/null || true
 else
-	echo "*/10 * * * * cd /app && git pull" | "$CRONTAB_BIN" -
+	echo "*/10 * * * * cd /app && git pull" | "$CRONTAB_BIN" - || echo "cron-setup: crontab falhou; seguindo sem git pull" >&2
 fi

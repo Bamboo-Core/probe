@@ -63,5 +63,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=10 \
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
-CMD ["sh", "-c", "sh /app/cron-setup.sh && crond && pm2-runtime start ecosystem.config.cjs --env production"]
+CMD ["sh", "-c", "sh /app/cron-setup.sh || true; crond && pm2-runtime start ecosystem.config.cjs --env production"]
 

@@ -23,4 +23,8 @@ grep -q 'git pull' "$OUT" && ok "PROBE_GIT_PULL=1: crontab contém git pull" || 
 PROBE_GIT_PULL=0 ./cron-setup.sh
 if [ -f "$OUT" ] && grep -q 'git pull' "$OUT"; then nok "PROBE_GIT_PULL=0 não pode ter git pull"; else ok "PROBE_GIT_PULL=0: crontab sem git pull"; fi
 
+printf '#!/bin/sh\nexit 1\n' > "$tmp/crontab-falho"; chmod +x "$tmp/crontab-falho"
+if env -u PROBE_GIT_PULL CRONTAB_BIN="$tmp/crontab-falho" ./cron-setup.sh 2>/dev/null; then ok "crontab falhando não aborta o cron-setup"; else nok "crontab falhando abortou o cron-setup"; fi
+if PROBE_GIT_PULL=0 CRONTAB_BIN="$tmp/crontab-falho" ./cron-setup.sh 2>/dev/null; then ok "crontab -r falhando não aborta"; else nok "crontab -r falhando abortou"; fi
+
 [ "$falhas" -eq 0 ]
