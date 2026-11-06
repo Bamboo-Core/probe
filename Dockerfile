@@ -1,5 +1,5 @@
 # Build stage - onde compilamos os módulos nativos
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
 COPY . .
 
 # Production stage - imagem final mínima
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 LABEL maintainer="Giovane Heleno" \
       version="2.2.7" \
